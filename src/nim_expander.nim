@@ -1,7 +1,8 @@
-import osproc, os, parseopt, strformat, strutils
+import std/[osproc, os, parseopt, strformat, strutils, tempfiles]
 
 const
   Version = "0.0.1"
+
   Usage = fmt"""
 nim_expander - expander for competitive programing library {Version}
 Usage:
@@ -13,53 +14,15 @@ Options:
   --help                show this help
 """
 
-proc writeHelp() =
-  stdout.write(Usage)
-  stdout.flushFile()
-  quit(0)
-
-proc writeVersion() =
-  stdout.write(Version & "\n")
-  stdout.flushFile()
-  quit(0)
-
-proc getDepsFilePath(source: string): string =
-  result = getTempDir() / lastPathPart(source).changeFileExt("deps")
-
-proc genDeps(source: string) =
-  let fullpath = absolutePath(source)
-  discard execProcess(fmt"nim cpp --genScript:on {fullpath}", workingdir = getTempDir())
-
-proc readDeps(depsFilePath: string): string =
-  let f = open(depsFilePath, FileMode.fmRead)
-  result = f.readAll()
-  f.close()
-
-type ModulePathInfo = tuple
-  fullPath: string
-  relPath: string
-
-proc getExpand(deps: seq[string], bases: seq[string]): seq[ModulePathInfo] =
-  for dep in deps:
-    for base in bases:
-      if dep.startsWith(base):
-        result.add((fullPath: dep, relPath: dep.relativePath(base)))
-
-proc readCode(path: string): string =
-  stderr.writeLine(fmt"expand: {path}")
-  var f = open(path, FileMode.fmRead)
-  result = f.readAll()
-  f.close()
-
-const
-  expandHeader = """
+  ExpandHeader = """
 static:
   when not defined(lazyCompile):
     template writeModule(path: string, code: untyped): untyped =
       discard staticExec("mkdir -p $(dirname " & path & ")")
       discard staticExec("cat - > " & path, astToStr(code))
 """
-  expandFooter = """
+
+  ExpandFooter = """
     type CompileError = object of CatchableError
     let resp = gorgeEx("nim cpp -d:lazyCompile -p:. -d:release --opt:speed --multimethods:on --warning[SmallLshouldNotBeUsed]:off --hints:off --out:a.out Main.nim")
     if resp.exitCode != 0:
@@ -67,25 +30,70 @@ static:
     quit(resp.exitCode)
 """
 
+
+proc writeHelp() =
+  stdout.write(Usage)
+  stdout.flushFile()
+  quit(0)
+
+
+proc writeVersion() =
+  stdout.write(Version & "\n")
+  stdout.flushFile()
+  quit(0)
+
+
+type ModulePathInfo = tuple
+  fullPath: string
+  relPath: string
+
+
+proc readFile(path: string): string =
+  stderr.writeLine(fmt"read: {path}")
+  var f = open(path, FileMode.fmRead)
+  result = f.readAll()
+  f.close()
+
+
+proc getExpand(deps: seq[string], bases: seq[string]): seq[ModulePathInfo] =
+  ## 依存するファイル一覧からコマンドラインで指定されたパスの下にあるものを抽出する。
+  for dep in deps:
+    for base in bases:
+      if dep.startsWith(base):
+        result.add((fullPath: dep, relPath: dep.relativePath(base)))
+
+
+proc genDeps(source: string): seq[string] =
+  ## --genScript:onをつけてコンパイルすると、依存するファイル一覧.depsが生成される
+  let
+    tempDir = createTempDir("nim_expander", "")
+    depsFile = tempDir / lastPathPart(source).changeFileExt("deps")
+
+  try:
+    let (_, exitCode) = execCmdEx(fmt"nim cpp --genScript:on {source.absolutePath()}", workingdir = tempDir)
+    if exitCode != 0:
+      stderr.write("Failed to analyze dependency.\n")
+      stderr.flushFile()
+      quit(1)
+    assert depsFile.fileExists()
+    return depsFile.readFile().splitLines()
+
+  finally:
+    tempDir.removeDir()
+
 proc expand*(source: string, bases: seq[string]): string =
-  let depsFilePath = getDepsFilePath(source)
-
-  genDeps(source)
-  assert fileExists(depsFilePath)
-
-  let deps = readDeps(depsFilePath).splitLines()
-  removeFile(depsFilePath)
-
-  let expandModules = getExpand(deps, bases)
+  let
+    deps = genDeps(source)
+    expandModules = getExpand(deps, bases)
 
   var res = newSeq[string]()
   if expandModules.len != 0:
-    res.add(expandHeader)
+    res.add(ExpandHeader)
 
     for module in expandModules:
       var innerTripleQuote = false
       res.add("    writeModule(\"" & module.relPath & "\"):")
-      for line in readCode(module.fullPath).splitLines():
+      for line in readFile(module.fullPath).splitLines():
         if innerTripleQuote:
           res.add(line)
         else:
@@ -95,13 +103,11 @@ proc expand*(source: string, bases: seq[string]): string =
 
       res.add("")
 
-    res.add(expandFooter)
+    res.add(ExpandFooter)
 
-  res.add(readCode(source))
+  res.add(readFile(source))
   result = res.join("\n")
 
-proc resolvePath(path: string): string =
-  result = path.expandTilde().normalizedPath().absolutePath()
 
 proc main() =
   var
@@ -115,7 +121,7 @@ proc main() =
     of cmdLongOption, cmdShortOption:
       case normalize(key)
       of "o", "out": outfile = val
-      of "m", "modules": modules.add(resolvePath(val))
+      of "m", "modules": modules.add(val.expandTilde().normalizedPath().absolutePath())
       of "help", "h": writeHelp()
       of "version", "v": writeVersion()
       else: writeHelp()
