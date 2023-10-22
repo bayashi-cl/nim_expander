@@ -27,7 +27,7 @@ if isMainModule: main()
 ## インストール
 
 ```sh
-nimble install
+nimble install https://github.com/bayashi-cl/nim_expander
 ```
 
 ## 実行コマンド
