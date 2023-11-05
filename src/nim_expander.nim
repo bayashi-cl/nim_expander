@@ -1,7 +1,7 @@
-import std/[osproc, os, parseopt, strformat, strutils, tempfiles]
+import std/[osproc, os, parseopt, strformat, strutils, tempfiles, sequtils]
 
 const
-  Version = "0.0.1"
+  Version = "0.0.2"
 
   Usage = fmt"""
 nim_expander - expander for competitive programing library {Version}
@@ -81,10 +81,26 @@ proc genDeps(source: string): seq[string] =
   finally:
     tempDir.removeDir()
 
-proc expand*(source: string, bases: seq[string]): string =
+proc resolvePathOrModle(dirPathOrModule: string): string =
+  ## ローカルパス->モジュールの順で解決
+
+  let asAbsolutePath = dirPathOrModule.expandTilde.absolutePath.normalizedPath
+  if asAbsolutePath.dirExists or asAbsolutePath.fileExists:
+    return asAbsolutePath
+
+  ## nimble pathコマンドでパス取得
+  let (output, exitCode) = execCmdEx(fmt"nimble path {dirPathOrModule}")
+  if exitCode == 0:
+    return output.strip
+
+  quit fmt"Failed to resolve: {dirPathOrModule}"
+
+
+proc expand*(source: string, modulesOrPaths: seq[string]): string =
   let
+    expandTarget = modulesOrPaths.map(resolvePathOrModle) # ソースが依存していた場合展開するファイルの一覧
     deps = genDeps(source)
-    expandModules = getExpand(deps, bases)
+    expandModules = getExpand(deps, expandTarget)         # 実際に展開してソースに埋め込むファイルの一覧
 
   var res = newSeq[string]()
   if expandModules.len != 0:
@@ -121,7 +137,7 @@ proc main() =
     of cmdLongOption, cmdShortOption:
       case normalize(key)
       of "o", "out": outfile = val
-      of "m", "modules": modules.add(val.expandTilde().normalizedPath().absolutePath())
+      of "m", "modules": modules.add(val)
       of "help", "h": writeHelp()
       of "version", "v": writeVersion()
       else: writeHelp()
