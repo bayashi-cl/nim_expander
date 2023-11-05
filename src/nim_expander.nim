@@ -1,7 +1,7 @@
 import std/[osproc, os, parseopt, strformat, strutils, tempfiles, sequtils]
 
 const
-  Version = "0.0.1"
+  Version = "0.0.2"
 
   Usage = fmt"""
 nim_expander - expander for competitive programing library {Version}
